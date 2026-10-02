@@ -47,7 +47,7 @@ async function cloudHistory(){let {data:r,error}=await cloud.from('app_state').s
 async function saveCloudRun(record){let items=await cloudHistory();items.unshift(record);let {error}=await cloud.from('app_state').upsert({id:8,payload:{items:items.slice(0,300)}},{onConflict:'id'});if(error)throw error}
 async function loadCloudHistory(){try{let h=await cloudHistory();$('adminHistory').innerHTML=h.length?h.map(r=>`<div class="admin-step"><b>${r.userName||r.userEmail||'-'}</b><div class="muted">Start: ${new Date(r.startedAt).toLocaleString()}<br>${(r.scans||[]).map(x=>`${x.name}: ${new Date(x.at).toLocaleTimeString()}`).join('<br>')}<br>Koniec: ${r.finishedAt?new Date(r.finishedAt).toLocaleString():'przerwana'}</div></div>`).join(''):'Brak historii.'}catch(e){$('adminHistory').textContent=e.message}}
 const oldStartRun=startRun;startRun=function(){oldStartRun();if(run){run.userId=currentUser?.id;run.userName=currentProfile?.full_name||currentProfile?.email;run.userEmail=currentProfile?.email||currentUser?.email;localStorage.setItem('vakt_run',JSON.stringify(run))}};
-const oldFinishRun=finishRun;finishRun=async function(){run.finishedAt=new Date().toISOString();try{await saveCloudRun(run)}catch(e){toast('Błąd zapisu historii: '+e.message)}oldFinishRun()};
+const oldFinishRun=finishRun;finishRun=async function(){run.finishedAt=new Date().toISOString();try{const identity=await ensureCurrentIdentity();run.userId=identity.id;run.userName=identity.name;run.userEmail=identity.email;localStorage.setItem('vakt_run',JSON.stringify(run));await saveCloudRun({...run})}catch(e){toast('Błąd zapisu historii: '+e.message)}oldFinishRun()};
 startCamera=async function(){try{stopCamera();$('scanBox').innerHTML='<div id="qr-reader" style="width:100%"></div>';qrScanner=new Html5Qrcode('qr-reader');await qrScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:230,height:230}},txt=>{acceptCode(txt,'QR');stopCamera()},()=>{})}catch(e){toast('Nie udało się uruchomić skanera QR: '+e.message)}};
 stopCamera=function(){if(qrScanner){qrScanner.stop().catch(()=>{}).finally(()=>{qrScanner.clear().catch(()=>{});qrScanner=null})}if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('scanBox').innerHTML='<div><div style="font-size:44px">▣</div><b id="scanTitle">Zeskanuj kod QR</b><p class="muted" id="scanHelp">Użyj aparatu lub wybierz obraz kodu</p></div>'};
 readImage=async function(file){if(!file)return;try{let scanner=new Html5Qrcode('qr-reader-file-temp');let txt=await scanner.scanFile(file,true);acceptCode(txt,'QR obraz');scanner.clear()}catch(e){toast('Nie wykryto kodu QR na obrazie.')}};
@@ -118,12 +118,35 @@ applyVaktLanguage=function(code){originalApplyVaktLanguage(code);document.queryS
 const priorRenderAdminSteps=renderAdminSteps;
 renderAdminSteps=function(){priorRenderAdminSteps();document.querySelectorAll('#adminSteps .admin-step').forEach(el=>{let labels=el.querySelectorAll('label');if(labels[0])labels[0].childNodes[0].textContent=t('name');if(labels[2])labels[2].childNodes[0].textContent=t('description');let sw=el.querySelectorAll('.switch label');if(sw[0])sw[0].textContent=t('photoGlobal');if(sw[1])sw[1].textContent=t('activePoint');el.querySelector('.up').textContent='↑ '+t('up');el.querySelector('.down').textContent='↓ '+t('down');el.querySelector('.del').textContent=t('delete')});};
 
-startRun=function(){const steps=activeSteps();if(!steps.length)return toast(t('adminNeedsPoint'));run={id:crypto.randomUUID(),startedAt:new Date().toISOString(),index:0,scans:[],userId:currentUser?.id,userName:currentProfile?.full_name||currentProfile?.email,userEmail:currentProfile?.email||currentUser?.email};localStorage.setItem('vakt_run',JSON.stringify(run));view('run');renderRun()};
+async function ensureCurrentIdentity(){
+ let {data:{session},error:sessionError}=await cloud.auth.getSession();
+ if(sessionError)throw sessionError;
+ if(!session?.user)throw new Error('Brak aktywnej sesji użytkownika.');
+ currentUser=session.user;
+ let {data:profile,error:profileError}=await cloud.from('profiles').select('*').eq('id',currentUser.id).maybeSingle();
+ if(profileError)console.warn('Profile load:',profileError.message);
+ currentProfile=profile||currentProfile||{};
+ const meta=currentUser.user_metadata||{};
+ const name=currentProfile.full_name||currentProfile.name||currentProfile.display_name||meta.full_name||meta.name||currentUser.email||'Unknown user';
+ const email=currentProfile.email||currentUser.email||'';
+ return{id:currentUser.id,name,email};
+}
+startRun=async function(){
+ const steps=activeSteps();
+ if(!steps.length)return toast(t('adminNeedsPoint'));
+ $('startBtn').disabled=true;
+ try{
+  const identity=await ensureCurrentIdentity();
+  run={id:crypto.randomUUID(),startedAt:new Date().toISOString(),index:0,scans:[],userId:identity.id,userName:identity.name,userEmail:identity.email};
+  localStorage.setItem('vakt_run',JSON.stringify(run));
+  view('run');renderRun();
+ }catch(error){console.error(error);toast(error.message||'Nie udało się pobrać użytkownika.')}finally{$('startBtn').disabled=false}
+};
 acceptCode=async function(code,method='QR'){const s=activeSteps()[run?.index];if(!s)return;if(String(code).trim()!==String(s.code).trim())return toast(t('bad'));if((data.settings.photo||s.photo)&&!$('photoInput').files[0])return toast(t('photoFirst'));run.scans.push({stepId:s.id,name:s.name,code:s.code,at:new Date().toISOString(),method,photo:!!$('photoInput').files[0]});run.index++;localStorage.setItem('vakt_run',JSON.stringify(run));await finalStop();if(run.index>=activeSteps().length)finishRun();else{toast(t('pointDone'));renderRun()}};
 $('saveSettings').onclick=()=>{data.settings.photo=$('globalPhoto').checked;data.settings.nfc=$('nfcEnabled').checked;data.settings.reportUrl=$('reportUrl').value.trim()||REPORT;save();toast(t('saved'))};
 ensureHistoryModal();
 
 cloudLoad();
 
-const old=JSON.parse(localStorage.getItem('vakt_run')||'null');if(old){run=old;view('run');renderRun()}else view('home');
+const old=JSON.parse(localStorage.getItem('vakt_run')||'null');if(old){run=old;ensureCurrentIdentity().then(identity=>{run.userId=run.userId||identity.id;run.userName=run.userName||identity.name;run.userEmail=run.userEmail||identity.email;localStorage.setItem('vakt_run',JSON.stringify(run))}).catch(console.error);view('run');renderRun()}else view('home');
 </script></body></html>
