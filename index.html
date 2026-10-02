@@ -45,7 +45,7 @@ async function cloudLoad(){let {data:{session}}=await cloud.auth.getSession();if
 async function cloudSaveConfig(){save();let {error}=await cloud.from('app_state').upsert({id:7,payload:data},{onConflict:'id'});if(error)toast(error.message)}
 async function cloudHistory(){let {data:r,error}=await cloud.from('app_state').select('payload').eq('id',8).maybeSingle();if(error)throw error;return Array.isArray(r?.payload?.items)?r.payload.items:[]}
 async function saveCloudRun(record){let items=await cloudHistory();items.unshift(record);let {error}=await cloud.from('app_state').upsert({id:8,payload:{items:items.slice(0,300)}},{onConflict:'id'});if(error)throw error}
-async function loadCloudHistory(){try{let h=await cloudHistory();$('adminHistory').innerHTML=h.length?h.map(r=>`<div class="admin-step"><b>${r.userName||r.userEmail||'-'}</b><div class="muted">Start: ${new Date(r.startedAt).toLocaleString()}<br>${(r.scans||[]).map(x=>`${x.name}: ${new Date(x.at).toLocaleTimeString()}`).join('<br>')}<br>Koniec: ${r.finishedAt?new Date(r.finishedAt).toLocaleString():'przerwana'}</div></div>`).join(''):'Brak historii.'}catch(e){$('adminHistory').textContent=e.message}}
+async function loadCloudHistory(){try{let h=await cloudHistory();$('adminHistory').innerHTML=h.length?h.map(r=>`<div class="admin-step"><b>${r.userName||r.userEmail||r.userId||'-'}</b><div class="muted">Start: ${new Date(r.startedAt).toLocaleString()}<br>${(r.scans||[]).map(x=>`${x.name}: ${new Date(x.at).toLocaleTimeString()}`).join('<br>')}<br>Koniec: ${r.finishedAt?new Date(r.finishedAt).toLocaleString():'przerwana'}</div></div>`).join(''):'Brak historii.'}catch(e){$('adminHistory').textContent=e.message}}
 const oldStartRun=startRun;startRun=function(){oldStartRun();if(run){run.userId=currentUser?.id;run.userName=currentProfile?.full_name||currentProfile?.email;run.userEmail=currentProfile?.email||currentUser?.email;localStorage.setItem('vakt_run',JSON.stringify(run))}};
 const oldFinishRun=finishRun;finishRun=async function(){run.finishedAt=new Date().toISOString();try{const identity=await ensureCurrentIdentity();run.userId=identity.id;run.userName=identity.name;run.userEmail=identity.email;localStorage.setItem('vakt_run',JSON.stringify(run));await saveCloudRun({...run})}catch(e){toast('Błąd zapisu historii: '+e.message)}oldFinishRun()};
 startCamera=async function(){try{stopCamera();$('scanBox').innerHTML='<div id="qr-reader" style="width:100%"></div>';qrScanner=new Html5Qrcode('qr-reader');await qrScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:230,height:230}},txt=>{acceptCode(txt,'QR');stopCamera()},()=>{})}catch(e){toast('Nie udało się uruchomić skanera QR: '+e.message)}};
@@ -91,9 +91,9 @@ function ensureHistoryModal(){
 }
 function closeHistoryDetails(){$('historyModal')?.classList.add('hidden');$('historyBackdrop')?.classList.add('hidden')}
 async function openHistoryDetails(id){
- ensureHistoryModal();let items=await cloudHistory();let r=items.find(x=>x.id===id);if(!r)return;
+ ensureHistoryModal();let items=await profileNamesForHistory(await cloudHistory());let r=items.find(x=>x.id===id);if(!r)return;
  $('historyModalTitle').textContent=t('details');$('closeHistoryModal').textContent=t('closeDetails');
- $('historyModalBody').innerHTML=`<div class="stack"><div><b>${t('employee')}</b><div class="muted">${esc(r.userName||r.userEmail||'-')}</div></div><div class="row"><div><b>${t('started')}</b><div class="muted">${fmtDate(r.startedAt)}</div></div><div><b>${t('finished')}</b><div class="muted">${fmtDate(r.finishedAt)}</div></div></div><div><b>${t('scans')}</b>${(r.scans||[]).length?(r.scans||[]).map((x,i)=>`<div class="admin-step"><b>${i+1}. ${esc(x.name||'-')}</b><div class="muted">${fmtDate(x.at)}<br>${t('code')}: ${esc(qrCodeFor(x))}<br>${t('method')}: ${esc(x.method||'QR')}</div></div>`).join(''):`<p class="muted">${t('noScans')}</p>`}</div></div>`;
+ $('historyModalBody').innerHTML=`<div class="stack"><div><b>${t('employee')}</b><div class="muted">${esc(r.userName||r.userEmail||r.userId||'-')}</div></div><div class="row"><div><b>${t('started')}</b><div class="muted">${fmtDate(r.startedAt)}</div></div><div><b>${t('finished')}</b><div class="muted">${fmtDate(r.finishedAt)}</div></div></div><div><b>${t('scans')}</b>${(r.scans||[]).length?(r.scans||[]).map((x,i)=>`<div class="admin-step"><b>${i+1}. ${esc(x.name||'-')}</b><div class="muted">${fmtDate(x.at)}<br>${t('code')}: ${esc(qrCodeFor(x))}<br>${t('method')}: ${esc(x.method||'QR')}</div></div>`).join(''):`<p class="muted">${t('noScans')}</p>`}</div></div>`;
  $('historyModalActions').innerHTML=isAdmin()?`<button class="btn danger" id="deleteHistoryRecord">${t('deletePatrol')}</button>`:'';
  if(isAdmin())$('deleteHistoryRecord').onclick=()=>deleteHistoryRecord(id);
  $('historyBackdrop').classList.remove('hidden');$('historyModal').classList.remove('hidden');
@@ -107,8 +107,16 @@ async function deleteHistoryRecord(id){
  closeHistoryDetails();toast(t('deleted'));await loadCloudHistory();await renderHistory();
  }catch(e){console.error(e);toast(t('deleteError'))}
 }
-async function visibleCloudHistory(){let h=await cloudHistory();return canSeeAllHistory()?h:h.filter(r=>r.userId===currentUser?.id||(!r.userId&&r.userEmail===currentProfile?.email))}
-function historyCard(r){return `<button class="admin-step history-record" data-history-id="${esc(r.id)}" style="width:100%;color:inherit;background:#0c1929;text-align:left;cursor:pointer"><b>${esc(r.userName||r.userEmail||'-')}</b><div class="muted">${fmtDate(r.finishedAt||r.startedAt)} · ${(r.scans||[]).length} ${t('points')}</div></button>`}
+async function profileNamesForHistory(items){
+ const ids=[...new Set(items.map(r=>r.userId).filter(Boolean))];
+ if(!ids.length)return items;
+ const {data:profiles,error}=await cloud.from('profiles').select('*').in('id',ids);
+ if(error){console.warn('History profiles:',error.message);return items}
+ const map=new Map((profiles||[]).map(p=>[p.id,p]));
+ return items.map(r=>{const p=map.get(r.userId),name=r.userName||p?.full_name||p?.name||p?.display_name||r.userEmail||p?.email||'-',email=r.userEmail||p?.email||'';return{...r,userName:name,userEmail:email}})
+}
+async function visibleCloudHistory(){let h=await cloudHistory();h=await profileNamesForHistory(h);return canSeeAllHistory()?h:h.filter(r=>r.userId===currentUser?.id||(!r.userId&&r.userEmail===currentProfile?.email))}
+function historyCard(r){return `<button class="admin-step history-record" data-history-id="${esc(r.id)}" style="width:100%;color:inherit;background:#0c1929;text-align:left;cursor:pointer"><b>${esc(r.userName||r.userEmail||r.userId||'-')}</b><div class="muted">${fmtDate(r.finishedAt||r.startedAt)} · ${(r.scans||[]).length} ${t('points')}</div></button>`}
 renderHistory=async function(){try{let h=await visibleCloudHistory();$('recentTitle').textContent=canSeeAllHistory()?t('allHistory'):t('myHistory');$('history').innerHTML=h.length?h.map(historyCard).join(''):`<span class="muted">${t('noHistory')}</span>`;document.querySelectorAll('#history .history-record').forEach(x=>x.onclick=()=>openHistoryDetails(x.dataset.historyId))}catch(e){$('history').textContent=e.message}}
 loadCloudHistory=async function(){try{let h=await visibleCloudHistory();$('adminHistory').innerHTML=h.length?h.map(historyCard).join(''):t('noHistory');document.querySelectorAll('#adminHistory .history-record').forEach(x=>x.onclick=()=>openHistoryDetails(x.dataset.historyId))}catch(e){$('adminHistory').textContent=e.message}}
 
@@ -142,6 +150,7 @@ startRun=async function(){
   view('run');renderRun();
  }catch(error){console.error(error);toast(error.message||'Nie udało się pobrać użytkownika.')}finally{$('startBtn').disabled=false}
 };
+$('startBtn').onclick=()=>startRun();
 acceptCode=async function(code,method='QR'){const s=activeSteps()[run?.index];if(!s)return;if(String(code).trim()!==String(s.code).trim())return toast(t('bad'));if((data.settings.photo||s.photo)&&!$('photoInput').files[0])return toast(t('photoFirst'));run.scans.push({stepId:s.id,name:s.name,code:s.code,at:new Date().toISOString(),method,photo:!!$('photoInput').files[0]});run.index++;localStorage.setItem('vakt_run',JSON.stringify(run));await finalStop();if(run.index>=activeSteps().length)finishRun();else{toast(t('pointDone'));renderRun()}};
 $('saveSettings').onclick=()=>{data.settings.photo=$('globalPhoto').checked;data.settings.nfc=$('nfcEnabled').checked;data.settings.reportUrl=$('reportUrl').value.trim()||REPORT;save();toast(t('saved'))};
 ensureHistoryModal();
